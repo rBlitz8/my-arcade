@@ -1,0 +1,148 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Paddle Bounce - My Arcade</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div id="wrap">
+  <a class="back-link" href="index.html">Menu</a>
+  <canvas id="game" width="600" height="700"></canvas>
+  <div id="hud">Bounces: <span id="count">0</span> / 15</div>
+  <div id="message">
+    <span id="message-text"></span>
+    <button id="restart">Restart</button>
+  </div>
+</div>
+<script>
+const canvas = document.getElementById('game');
+const ctx = canvas.getContext('2d');
+const countEl = document.getElementById('count');
+const messageEl = document.getElementById('message');
+const messageTextEl = document.getElementById('message-text');
+const restartBtn = document.getElementById('restart');
+
+const WIN_BOUNCES = 15;
+const PADDLE_WIDTH = 110;
+const PADDLE_HEIGHT = 16;
+
+const TRAIL_LENGTH = 12;
+
+let paddle, ball, bounces, gameOver, trail;
+
+function resetGame() {
+  paddle = {
+    width: PADDLE_WIDTH,
+    height: PADDLE_HEIGHT,
+    x: (canvas.width - PADDLE_WIDTH) / 2,
+    y: canvas.height - 50
+  };
+
+  const radius = 9;
+  ball = {
+    radius: radius,
+    x: radius + Math.random() * (canvas.width - radius * 2),
+    y: 30,
+    vx: 4.5,
+    vy: 6
+  };
+
+  bounces = 0;
+  countEl.textContent = bounces;
+  gameOver = false;
+  trail = [];
+  messageEl.style.display = 'none';
+}
+
+canvas.addEventListener('mousemove', (e) => {
+  const rect = canvas.getBoundingClientRect();
+  const mouseX = e.clientX - rect.left;
+  paddle.x = Math.min(Math.max(mouseX - paddle.width / 2, 0), canvas.width - paddle.width);
+});
+
+restartBtn.addEventListener('click', resetGame);
+
+function endGame(won) {
+  gameOver = true;
+  messageTextEl.textContent = won ? 'You Win!' : 'You Lose!';
+  messageEl.style.display = 'block';
+}
+
+function update() {
+  if (gameOver) return;
+
+  ball.x += ball.vx;
+  ball.y += ball.vy;
+
+  trail.push({ x: ball.x, y: ball.y });
+  if (trail.length > TRAIL_LENGTH) {
+    trail.shift();
+  }
+
+  if (ball.x - ball.radius <= 0) {
+    ball.x = ball.radius;
+    ball.vx = -ball.vx;
+  } else if (ball.x + ball.radius >= canvas.width) {
+    ball.x = canvas.width - ball.radius;
+    ball.vx = -ball.vx;
+  }
+
+  if (ball.y - ball.radius <= 0) {
+    ball.y = ball.radius;
+    ball.vy = -ball.vy;
+  }
+
+  if (
+    ball.vy > 0 &&
+    ball.y + ball.radius >= paddle.y &&
+    ball.y + ball.radius <= paddle.y + paddle.height &&
+    ball.x >= paddle.x &&
+    ball.x <= paddle.x + paddle.width
+  ) {
+    ball.y = paddle.y - ball.radius;
+    ball.vy = -ball.vy;
+    bounces++;
+    countEl.textContent = bounces;
+    if (bounces >= WIN_BOUNCES) {
+      endGame(true);
+    }
+  }
+
+  if (ball.y - ball.radius > canvas.height) {
+    endGame(false);
+  }
+}
+
+function draw() {
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+  ctx.fillStyle = '#fff';
+  ctx.fillRect(paddle.x, paddle.y, paddle.width, paddle.height);
+
+  for (let i = 0; i < trail.length; i++) {
+    const point = trail[i];
+    const progress = (i + 1) / trail.length;
+    ctx.beginPath();
+    ctx.arc(point.x, point.y, ball.radius * progress, 0, Math.PI * 2);
+    ctx.fillStyle = `rgba(0, 255, 0, ${progress * 0.4})`;
+    ctx.fill();
+  }
+
+  ctx.beginPath();
+  ctx.arc(ball.x, ball.y, ball.radius, 0, Math.PI * 2);
+  ctx.fillStyle = '#0f0';
+  ctx.fill();
+}
+
+function loop() {
+  update();
+  draw();
+  requestAnimationFrame(loop);
+}
+
+resetGame();
+loop();
+</script>
+</body>
+</html>

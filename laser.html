@@ -1,0 +1,383 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Laser Dodge - My Arcade</title>
+<link rel="stylesheet" href="style.css">
+<style>
+  #hearts {
+    color: #f33;
+    letter-spacing: 4px;
+  }
+  #controls {
+    position: absolute;
+    bottom: 10px;
+    left: 50%;
+    transform: translateX(-50%);
+    font-size: 0.85rem;
+    color: #999;
+    text-align: center;
+  }
+</style>
+</head>
+<body>
+<div id="wrap">
+  <a class="back-link" href="index.html">Menu</a>
+  <canvas id="game" width="900" height="560"></canvas>
+  <div id="hud">
+    <div id="hearts"></div>
+    <div>Dodged: <span id="count">0</span> / 20</div>
+  </div>
+  <div id="controls">A/D or &larr;/&rarr; move &middot; S/&darr; crouch &middot; W/&uarr; jump</div>
+  <div id="message">
+    <span id="message-text"></span>
+    <button id="restart">Restart</button>
+  </div>
+</div>
+<script>
+const canvas = document.getElementById('game');
+const ctx = canvas.getContext('2d');
+const heartsEl = document.getElementById('hearts');
+const countEl = document.getElementById('count');
+const messageEl = document.getElementById('message');
+const messageTextEl = document.getElementById('message-text');
+const restartBtn = document.getElementById('restart');
+
+const WIN_DODGES = 20;
+const START_HEARTS = 2;
+const INVINCIBLE_MS = 1500;
+const JUMP_DURATION_MS = 650;
+const JUMP_HEIGHT = 2.0;
+
+const FOCAL = 360;
+const HORIZON_Y = canvas.height * 0.45;
+const CAMERA_HEIGHT = 1.5;
+const PLAYER_Z = 6;
+const WINDOW = 1.5;
+const COLLISION_NEAR = PLAYER_Z - WINDOW;
+const COLLISION_FAR = PLAYER_Z + WINDOW;
+const SPAWN_Z = 70;
+
+const LANE_X = { left: -2.3, center: 0, right: 2.3 };
+const LANE_HALF_WIDTH = 1.15;
+const CEIL_Y = 4.2;
+const ALL_X0 = -3.6;
+const ALL_X1 = 3.6;
+const HIGH_BAR = { y0: 1.1, y1: 2.4 };
+const LOW_BAR = { y0: 0, y1: 0.9 };
+
+const STAND_HEIGHT = 1.8;
+const CROUCH_HEIGHT = 0.9;
+const BODY_WIDTH = 1.0;
+const HEAD_RADIUS = 0.32;
+
+const TYPES_SIMPLE = ['CROUCH_ONLY', 'JUMP_ONLY', 'LANE_LEFT', 'LANE_CENTER', 'LANE_RIGHT'];
+const TYPES_COMBO = [
+  'LANE_LEFT_CROUCH', 'LANE_CENTER_CROUCH', 'LANE_RIGHT_CROUCH',
+  'LANE_LEFT_JUMP', 'LANE_CENTER_JUMP', 'LANE_RIGHT_JUMP'
+];
+
+const BLOCKED_LANES = {
+  CROUCH_ONLY: [],
+  JUMP_ONLY: [],
+  LANE_LEFT: ['center', 'right'],
+  LANE_CENTER: ['left', 'right'],
+  LANE_RIGHT: ['left', 'center'],
+  LANE_LEFT_CROUCH: ['center', 'right'],
+  LANE_CENTER_CROUCH: ['left', 'right'],
+  LANE_RIGHT_CROUCH: ['left', 'center'],
+  LANE_LEFT_JUMP: ['center', 'right'],
+  LANE_CENTER_JUMP: ['left', 'right'],
+  LANE_RIGHT_JUMP: ['left', 'center']
+};
+
+function getBar(type) {
+  if (type === 'CROUCH_ONLY') return { x0: ALL_X0, x1: ALL_X1, ...HIGH_BAR };
+  if (type === 'JUMP_ONLY') return { x0: ALL_X0, x1: ALL_X1, ...LOW_BAR };
+  if (type.endsWith('CROUCH')) return { x0: ALL_X0, x1: ALL_X1, ...HIGH_BAR };
+  if (type.endsWith('JUMP')) return { x0: ALL_X0, x1: ALL_X1, ...LOW_BAR };
+  return null;
+}
+
+function isSafe(type, player) {
+  switch (type) {
+    case 'CROUCH_ONLY': return player.vertical === 'crouch';
+    case 'JUMP_ONLY': return player.vertical === 'jump';
+    case 'LANE_LEFT': return player.lane === 'left';
+    case 'LANE_CENTER': return player.lane === 'center';
+    case 'LANE_RIGHT': return player.lane === 'right';
+    case 'LANE_LEFT_CROUCH': return player.lane === 'left' && player.vertical === 'crouch';
+    case 'LANE_CENTER_CROUCH': return player.lane === 'center' && player.vertical === 'crouch';
+    case 'LANE_RIGHT_CROUCH': return player.lane === 'right' && player.vertical === 'crouch';
+    case 'LANE_LEFT_JUMP': return player.lane === 'left' && player.vertical === 'jump';
+    case 'LANE_CENTER_JUMP': return player.lane === 'center' && player.vertical === 'jump';
+    case 'LANE_RIGHT_JUMP': return player.lane === 'right' && player.vertical === 'jump';
+    default: return true;
+  }
+}
+
+function project(x, y, z) {
+  const scale = FOCAL / z;
+  return { x: canvas.width / 2 + x * scale, y: HORIZON_Y - (y - CAMERA_HEIGHT) * scale, scale };
+}
+
+let player, hazards, hearts, dodgeCount, gameOver, spawnTimer, lastTime;
+
+function resetGame() {
+  player = {
+    lane: 'center',
+    visualX: 0,
+    crouchHeld: false,
+    jumping: false,
+    jumpStart: 0,
+    vertical: 'stand',
+    invincibleUntil: 0
+  };
+  hazards = [];
+  hearts = START_HEARTS;
+  dodgeCount = 0;
+  gameOver = false;
+  spawnTimer = 1000;
+  lastTime = performance.now();
+
+  updateHearts();
+  countEl.textContent = dodgeCount;
+  messageEl.style.display = 'none';
+}
+
+function updateHearts() {
+  heartsEl.textContent = '❤'.repeat(hearts) + '♡'.repeat(START_HEARTS - hearts);
+}
+
+function endGame(won) {
+  gameOver = true;
+  messageTextEl.textContent = won ? 'You Win!' : 'You Lose!';
+  messageEl.style.display = 'block';
+}
+
+window.addEventListener('keydown', (e) => {
+  const key = e.key.toLowerCase();
+  if (['arrowleft', 'arrowright', 'arrowup', 'arrowdown', 'a', 'd', 'w', 's'].includes(key)) {
+    e.preventDefault();
+  }
+  if (gameOver) return;
+
+  if (key === 'a' || key === 'arrowleft') {
+    player.lane = player.lane === 'right' ? 'center' : 'left';
+  } else if (key === 'd' || key === 'arrowright') {
+    player.lane = player.lane === 'left' ? 'center' : 'right';
+  } else if (key === 's' || key === 'arrowdown') {
+    player.crouchHeld = true;
+  } else if (key === 'w' || key === 'arrowup') {
+    if (!player.jumping && !player.crouchHeld) {
+      player.jumping = true;
+      player.jumpStart = performance.now();
+    }
+  }
+});
+
+window.addEventListener('keyup', (e) => {
+  const key = e.key.toLowerCase();
+  if (key === 's' || key === 'arrowdown') {
+    player.crouchHeld = false;
+  }
+});
+
+restartBtn.addEventListener('click', resetGame);
+
+function pickType(dodgeCount) {
+  const comboChance = Math.min(0.35 + dodgeCount * 0.01, 0.55);
+  const pool = Math.random() < comboChance ? TYPES_COMBO : TYPES_SIMPLE;
+  return pool[Math.floor(Math.random() * pool.length)];
+}
+
+function spawnHazard() {
+  hazards.push({
+    type: pickType(dodgeCount),
+    z: SPAWN_Z,
+    hit: false
+  });
+}
+
+function updatePlayer(dt, now) {
+  if (player.jumping) {
+    const t = now - player.jumpStart;
+    if (t >= JUMP_DURATION_MS) {
+      player.jumping = false;
+      player.vertical = player.crouchHeld ? 'crouch' : 'stand';
+    } else {
+      player.vertical = 'jump';
+    }
+  } else {
+    player.vertical = player.crouchHeld ? 'crouch' : 'stand';
+  }
+
+  const targetX = LANE_X[player.lane];
+  const laneLerpMs = player.crouchHeld ? 480 : 120;
+  player.visualX += (targetX - player.visualX) * Math.min(dt / laneLerpMs, 1);
+}
+
+function jumpOffset(now) {
+  if (!player.jumping) return 0;
+  const t = (now - player.jumpStart) / JUMP_DURATION_MS;
+  return Math.sin(Math.PI * Math.min(t, 1)) * JUMP_HEIGHT;
+}
+
+function update(dt, now) {
+  if (gameOver) return;
+
+  updatePlayer(dt, now);
+
+  spawnTimer -= dt;
+  if (spawnTimer <= 0) {
+    spawnHazard();
+    const interval = Math.max(1900 - dodgeCount * 40, 1000);
+    spawnTimer = interval * (0.85 + Math.random() * 0.3);
+  }
+
+  const speed = Math.min(24 + dodgeCount * 0.7, 46);
+
+  for (let i = hazards.length - 1; i >= 0; i--) {
+    const hz = hazards[i];
+    hz.z -= speed * (dt / 1000);
+
+    if (hz.z <= COLLISION_FAR && hz.z >= COLLISION_NEAR && !hz.hit) {
+      if (!isSafe(hz.type, player) && now > player.invincibleUntil) {
+        hz.hit = true;
+        hearts--;
+        player.invincibleUntil = now + INVINCIBLE_MS;
+        updateHearts();
+        if (hearts <= 0) {
+          endGame(false);
+        }
+      }
+    }
+
+    if (hz.z < COLLISION_NEAR) {
+      if (!hz.hit) {
+        dodgeCount++;
+        countEl.textContent = dodgeCount;
+        if (dodgeCount >= WIN_DODGES) {
+          endGame(true);
+        }
+      }
+      hazards.splice(i, 1);
+    }
+  }
+}
+
+function drawCorridor() {
+  const near = {
+    bl: project(ALL_X0, 0, PLAYER_Z),
+    br: project(ALL_X1, 0, PLAYER_Z),
+    tl: project(ALL_X0, CEIL_Y, PLAYER_Z),
+    tr: project(ALL_X1, CEIL_Y, PLAYER_Z)
+  };
+  const far = {
+    bl: project(ALL_X0, 0, SPAWN_Z),
+    br: project(ALL_X1, 0, SPAWN_Z),
+    tl: project(ALL_X0, CEIL_Y, SPAWN_Z),
+    tr: project(ALL_X1, CEIL_Y, SPAWN_Z)
+  };
+
+  ctx.strokeStyle = '#333';
+  ctx.lineWidth = 1;
+  [['bl', 'bl'], ['br', 'br'], ['tl', 'tl'], ['tr', 'tr']].forEach(([a, b]) => {
+    ctx.beginPath();
+    ctx.moveTo(near[a].x, near[a].y);
+    ctx.lineTo(far[b].x, far[b].y);
+    ctx.stroke();
+  });
+
+  for (let z = 15; z < SPAWN_Z; z += 15) {
+    const bl = project(ALL_X0, 0, z);
+    const br = project(ALL_X1, 0, z);
+    const tl = project(ALL_X0, CEIL_Y, z);
+    const tr = project(ALL_X1, CEIL_Y, z);
+    ctx.beginPath();
+    ctx.moveTo(bl.x, bl.y);
+    ctx.lineTo(br.x, br.y);
+    ctx.lineTo(tr.x, tr.y);
+    ctx.lineTo(tl.x, tl.y);
+    ctx.closePath();
+    ctx.stroke();
+  }
+}
+
+function drawQuad(x0, y0, x1, y1, z, color) {
+  const p1 = project(x0, y0, z);
+  const p2 = project(x1, y0, z);
+  const p3 = project(x1, y1, z);
+  const p4 = project(x0, y1, z);
+  ctx.beginPath();
+  ctx.moveTo(p1.x, p1.y);
+  ctx.lineTo(p2.x, p2.y);
+  ctx.lineTo(p3.x, p3.y);
+  ctx.lineTo(p4.x, p4.y);
+  ctx.closePath();
+  ctx.fillStyle = color;
+  ctx.fill();
+  ctx.strokeStyle = 'rgba(255,255,255,0.5)';
+  ctx.stroke();
+}
+
+function drawHazard(hz) {
+  const blocked = BLOCKED_LANES[hz.type];
+  blocked.forEach((lane) => {
+    const cx = LANE_X[lane];
+    drawQuad(cx - LANE_HALF_WIDTH, 0, cx + LANE_HALF_WIDTH, CEIL_Y, hz.z, 'rgba(255, 30, 60, 0.55)');
+  });
+  const bar = getBar(hz.type);
+  if (bar) {
+    drawQuad(bar.x0, bar.y0, bar.x1, bar.y1, hz.z, 'rgba(255, 120, 0, 0.6)');
+  }
+}
+
+function drawPlayer(now) {
+  const scale = FOCAL / PLAYER_Z;
+  const offset = jumpOffset(now);
+  const height = player.vertical === 'crouch' ? CROUCH_HEIGHT : STAND_HEIGHT;
+
+  const flashing = now < player.invincibleUntil && Math.floor(now / 100) % 2 === 0;
+  ctx.globalAlpha = flashing ? 0.35 : 1;
+
+  const centerX = canvas.width / 2 + player.visualX * scale;
+  const feetY = HORIZON_Y - (offset - CAMERA_HEIGHT) * scale;
+  const headTopY = HORIZON_Y - (height + offset - CAMERA_HEIGHT) * scale;
+  const bodyLeft = centerX - (BODY_WIDTH / 2) * scale;
+  const bodyWidth = BODY_WIDTH * scale;
+
+  ctx.fillStyle = '#3cf';
+  ctx.fillRect(bodyLeft, headTopY, bodyWidth, feetY - headTopY);
+
+  ctx.beginPath();
+  ctx.arc(centerX, headTopY - HEAD_RADIUS * scale * 0.6, HEAD_RADIUS * scale, 0, Math.PI * 2);
+  ctx.fillStyle = '#fce';
+  ctx.fill();
+
+  ctx.globalAlpha = 1;
+}
+
+function draw(now) {
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  drawCorridor();
+
+  const sorted = [...hazards].sort((a, b) => b.z - a.z);
+  sorted.forEach(drawHazard);
+
+  drawPlayer(now);
+}
+
+function loop(now) {
+  const dt = Math.min(now - lastTime, 50);
+  lastTime = now;
+  update(dt, now);
+  draw(now);
+  requestAnimationFrame(loop);
+}
+
+resetGame();
+requestAnimationFrame(loop);
+</script>
+</body>
+</html>
