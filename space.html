@@ -53,6 +53,7 @@ const BULLET_DAMAGE = 25;
 const WAVE_GAP_MS = 2000;
 const ROW_CENTER_Y = 130;
 const BIG_SPREAD = 130;
+const STILL_AIM_JITTER = 150;
 const WAVES = [
   ['normal', 'normal', 'normal', 'normal', 'normal', 'normal'],
   ['big', 'big', 'big', 'big']
@@ -217,7 +218,21 @@ window.addEventListener('keyup', (e) => {
 
 restartBtn.addEventListener('click', resetGame);
 
+const laserSound = new Audio('lazer.mp3');
+laserSound.preload = 'auto';
+const explosionSound = new Audio('explosion.mp3');
+explosionSound.preload = 'auto';
+
+function playSound(base, volume, rate = 1) {
+  const sound = base.cloneNode();
+  sound.volume = volume;
+  sound.preservesPitch = false;
+  sound.playbackRate = rate;
+  sound.play().catch(() => {});
+}
+
 function fireBullet() {
+  playSound(laserSound, 0.1);
   const col = TURRET_COLS[nextTurret];
   nextTurret = 1 - nextTurret;
   bullets.push({
@@ -234,6 +249,9 @@ function enemyFire(enemy) {
   const recordedVx = Math.random() < 0.4 ? -player.vx : player.vx;
   const speedMultiplier = 1 - (35 + Math.random() * 55) / 100;
   let predictedX = player.x + SPRITE_W / 2 + recordedVx * speedMultiplier * t;
+  if (recordedVx === 0) {
+    predictedX += (Math.random() * 2 - 1) * STILL_AIM_JITTER;
+  }
   predictedX = Math.min(Math.max(predictedX, SPRITE_W / 2), canvas.width - SPRITE_W / 2);
   const offsets = enemy.type === 'big' ? [-BIG_SPREAD, 0, BIG_SPREAD] : [0];
   offsets.forEach((offset) => {
@@ -257,14 +275,10 @@ function update(dt, now) {
   player.x += player.vx * (dt / 1000);
   player.x = Math.min(Math.max(player.x, 0), canvas.width - SPRITE_W);
 
-  if (spaceHeld) {
-    fireCooldown -= dt;
-    if (fireCooldown <= 0) {
-      fireBullet();
-      fireCooldown = FIRE_COOLDOWN;
-    }
-  } else {
-    fireCooldown = 0;
+  fireCooldown = Math.max(fireCooldown - dt, 0);
+  if (spaceHeld && fireCooldown <= 0) {
+    fireBullet();
+    fireCooldown = FIRE_COOLDOWN;
   }
 
   if (nextWaveAt !== null && now >= nextWaveAt) {
@@ -288,14 +302,14 @@ function update(dt, now) {
       enemy.y = -enemy.h + (enemy.targetY + enemy.h) * t;
       if (t >= 1) {
         enemy.entering = false;
-        enemy.nextShotTime = now + 1000 + Math.random() * 2000;
+        enemy.nextShotTime = now + 1000 + Math.random() * 1500;
       }
       return;
     }
 
     if (now >= enemy.nextShotTime) {
       enemyFire(enemy);
-      enemy.nextShotTime = now + 5000;
+      enemy.nextShotTime = now + 4000;
     }
   });
 
@@ -314,6 +328,7 @@ function update(dt, now) {
         if (enemy.health <= 0) {
           enemy.exploding = true;
           enemy.explodeStart = now;
+          playSound(explosionSound, 0.3, enemy.type === 'big' ? 0.75 : 1);
         }
         break;
       }
