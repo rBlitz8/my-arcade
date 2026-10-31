@@ -8,14 +8,6 @@
   canvas {
     image-rendering: pixelated;
   }
-  #hearts-bottom {
-    position: absolute;
-    bottom: 12px;
-    right: 16px;
-    font-size: 1.8rem;
-    color: #f33;
-    letter-spacing: 4px;
-  }
   #controls {
     position: absolute;
     bottom: 10px;
@@ -31,7 +23,6 @@
 <div id="wrap">
   <a class="back-link" href="index.html">Menu</a>
   <canvas id="game" width="640" height="680"></canvas>
-  <div id="hearts-bottom"></div>
   <div id="controls">A/D or &larr;/&rarr; move &middot; Space (hold) to fire</div>
   <div id="message">
     <span id="message-text"></span>
@@ -41,7 +32,6 @@
 <script>
 const canvas = document.getElementById('game');
 const ctx = canvas.getContext('2d');
-const heartsEl = document.getElementById('hearts-bottom');
 const messageEl = document.getElementById('message');
 const messageTextEl = document.getElementById('message-text');
 const restartBtn = document.getElementById('restart');
@@ -53,10 +43,15 @@ const ENEMY_SPAWN_DELAY = 4000;
 const ENEMY_ENTER_MS = 1500;
 const FIRE_COOLDOWN = 1000 / 3;
 const PLAYER_SPEED = 260;
-const BULLET_SPEED = 480;
+const BULLET_SPEED = 720;
+const BULLET_W = 6;
+const BULLET_H = 18;
 const BALL_SPEED_Y = 220;
+const BALL_RADIUS = 21;
+const ENEMY_SHOT_INTERVAL_JITTER = 400;
 const ENEMY_MAX_HEALTH = 251;
 const BULLET_DAMAGE = 25;
+const ENEMY_COUNT = 6;
 
 const PLAYER_SPRITE = [
   '.Y......Y.',
@@ -82,18 +77,45 @@ const ENEMY_SPRITE = [
 ];
 const ENEMY_COLORS = { R: '#ff2a2a', K: '#141414' };
 
+const HEART_SPRITE = [
+  '.RR.RR.',
+  'RRRRRRR',
+  'RRRRRRR',
+  '.RRRRR.',
+  '..RRR..',
+  '...R...'
+];
+const HEART_FULL_COLORS = { R: '#ff3355' };
+const HEART_EMPTY_COLORS = { R: '#2a0f16' };
+const HEART_PIXEL = 5;
+const HEART_W = HEART_SPRITE[0].length * HEART_PIXEL;
+const HEART_H = HEART_SPRITE.length * HEART_PIXEL;
+const HEART_GAP = 10;
+
 const SPRITE_W = PLAYER_SPRITE[0].length * PIXEL;
 const SPRITE_H = PLAYER_SPRITE.length * PIXEL;
 const TURRET_COLS = [1, 8];
 
-function drawSprite(grid, colors, x, y) {
+function drawSprite(grid, colors, x, y, pixelSize) {
+  const size = pixelSize || PIXEL;
   for (let row = 0; row < grid.length; row++) {
     for (let col = 0; col < grid[row].length; col++) {
       const ch = grid[row][col];
       if (ch === '.') continue;
       ctx.fillStyle = colors[ch];
-      ctx.fillRect(x + col * PIXEL, y + row * PIXEL, PIXEL, PIXEL);
+      ctx.fillRect(x + col * size, y + row * size, size, size);
     }
+  }
+}
+
+function drawHearts() {
+  const totalWidth = START_HEARTS * HEART_W + (START_HEARTS - 1) * HEART_GAP;
+  const startX = canvas.width - totalWidth - 16;
+  const y = canvas.height - HEART_H - 14;
+  for (let i = 0; i < START_HEARTS; i++) {
+    const x = startX + i * (HEART_W + HEART_GAP);
+    const filled = i < hearts;
+    drawSprite(HEART_SPRITE, filled ? HEART_FULL_COLORS : HEART_EMPTY_COLORS, x, y, HEART_PIXEL);
   }
 }
 
@@ -148,12 +170,7 @@ function resetGame() {
   rightHeld = false;
   lastTime = performance.now();
 
-  updateHearts();
   messageEl.style.display = 'none';
-}
-
-function updateHearts() {
-  heartsEl.textContent = '❤'.repeat(Math.max(hearts, 0)) + '♡'.repeat(START_HEARTS - Math.max(hearts, 0));
 }
 
 function endGame(won) {
@@ -196,7 +213,10 @@ function enemyFire(enemy) {
   const originY = enemy.y + SPRITE_H;
   const dy = player.y - originY;
   const t = dy / BALL_SPEED_Y;
-  const predictedX = player.x + SPRITE_W / 2 + player.vx * t;
+  const recordedVx = Math.random() < 0.4 ? -player.vx : player.vx;
+  const speedMultiplier = 1 - (35 + Math.random() * 55) / 100;
+  let predictedX = player.x + SPRITE_W / 2 + recordedVx * speedMultiplier * t;
+  predictedX = Math.min(Math.max(predictedX, SPRITE_W / 2), canvas.width - SPRITE_W / 2);
   const dx = predictedX - originX;
   balls.push({
     x: originX,
@@ -229,7 +249,10 @@ function update(dt, now) {
 
   if (!enemiesSpawned && now - gameStart >= ENEMY_SPAWN_DELAY) {
     enemiesSpawned = true;
-    const centers = [canvas.width * 0.25, canvas.width * 0.5, canvas.width * 0.75];
+    const centers = [];
+    for (let i = 1; i <= ENEMY_COUNT; i++) {
+      centers.push(canvas.width * (i / (ENEMY_COUNT + 1)));
+    }
     centers.forEach((cx) => enemies.push(makeEnemy(cx)));
   }
 
@@ -255,7 +278,7 @@ function update(dt, now) {
 
     if (now >= enemy.nextShotTime) {
       enemyFire(enemy);
-      enemy.nextShotTime = now + 5000;
+      enemy.nextShotTime = now + 5000 + (Math.random() * 2 - 1) * ENEMY_SHOT_INTERVAL_JITTER;
     }
   });
 
@@ -268,7 +291,7 @@ function update(dt, now) {
     }
     for (const enemy of enemies) {
       if (!enemy.alive || enemy.entering || enemy.exploding) continue;
-      if (rectsOverlap(b.x - 2, b.y - 6, 4, 12, enemy.x, enemy.y, SPRITE_W, SPRITE_H)) {
+      if (rectsOverlap(b.x - BULLET_W / 2, b.y - BULLET_H / 2, BULLET_W, BULLET_H, enemy.x, enemy.y, SPRITE_W, SPRITE_H)) {
         enemy.health -= BULLET_DAMAGE;
         bullets.splice(i, 1);
         if (enemy.health <= 0) {
@@ -289,11 +312,10 @@ function update(dt, now) {
       continue;
     }
     if (now > player.invincibleUntil &&
-      rectsOverlap(ball.x - 7, ball.y - 7, 14, 14, player.x, player.y, SPRITE_W, SPRITE_H)) {
+      rectsOverlap(ball.x - BALL_RADIUS, ball.y - BALL_RADIUS, BALL_RADIUS * 2, BALL_RADIUS * 2, player.x, player.y, SPRITE_W, SPRITE_H)) {
       balls.splice(i, 1);
       hearts--;
       player.invincibleUntil = now + INVINCIBLE_MS;
-      updateHearts();
       if (hearts <= 0) {
         endGame(false);
       }
@@ -360,7 +382,7 @@ function drawBullets() {
     ctx.shadowColor = '#ffee55';
     ctx.shadowBlur = 10;
     ctx.fillStyle = '#ffee55';
-    ctx.fillRect(b.x - 2, b.y - 6, 4, 12);
+    ctx.fillRect(b.x - BULLET_W / 2, b.y - BULLET_H / 2, BULLET_W, BULLET_H);
     ctx.restore();
   });
 }
@@ -369,10 +391,10 @@ function drawBalls() {
   balls.forEach((ball) => {
     ctx.save();
     ctx.shadowColor = '#ff2a2a';
-    ctx.shadowBlur = 14;
+    ctx.shadowBlur = 24;
     ctx.fillStyle = '#ff5050';
     ctx.beginPath();
-    ctx.arc(ball.x, ball.y, 7, 0, Math.PI * 2);
+    ctx.arc(ball.x, ball.y, BALL_RADIUS, 0, Math.PI * 2);
     ctx.fill();
     ctx.restore();
   });
@@ -403,6 +425,7 @@ function draw(now) {
   drawBullets();
   drawBalls();
   drawPlayer(now);
+  drawHearts();
 }
 
 function loop(now) {
