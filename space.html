@@ -48,10 +48,17 @@ const BULLET_W = 6;
 const BULLET_H = 18;
 const BALL_SPEED_Y = 220;
 const BALL_RADIUS = 21;
-const ENEMY_SHOT_INTERVAL_JITTER = 400;
 const ENEMY_MAX_HEALTH = 251;
 const BULLET_DAMAGE = 25;
-const ENEMY_COUNT = 6;
+const WAVE_GAP_MS = 2000;
+const ROW_CENTER_Y = 130;
+const BIG_SPREAD = 130;
+const WAVES = [
+  ['normal', 'normal', 'normal', 'normal', 'normal', 'normal'],
+  ['big', 'big', 'big', 'big']
+];
+const ENEMY_PIXEL = { normal: PIXEL, big: PIXEL * 1.5 };
+const ENEMY_HEALTH = { normal: ENEMY_MAX_HEALTH, big: Math.round(ENEMY_MAX_HEALTH * 1.5) };
 
 const PLAYER_SPRITE = [
   '.Y......Y.',
@@ -103,7 +110,7 @@ function drawSprite(grid, colors, x, y, pixelSize) {
       const ch = grid[row][col];
       if (ch === '.') continue;
       ctx.fillStyle = colors[ch];
-      ctx.fillRect(x + col * size, y + row * size, size, size);
+      ctx.fillRect(Math.round(x + col * size), Math.round(y + row * size), Math.ceil(size), Math.ceil(size));
     }
   }
 }
@@ -130,22 +137,34 @@ for (let i = 0; i < 120; i++) {
   });
 }
 
-let player, bullets, enemies, balls, explosions, hearts, gameOver, gameStart, enemiesSpawned, nextTurret, spaceHeld, fireCooldown, leftHeld, rightHeld, lastTime;
+let player, bullets, enemies, balls, hearts, gameOver, wave, nextWaveAt, nextTurret, spaceHeld, fireCooldown, leftHeld, rightHeld, lastTime;
 
-function makeEnemy(cx) {
+function makeEnemy(type, cx, now) {
+  const pixel = ENEMY_PIXEL[type];
+  const w = ENEMY_SPRITE[0].length * pixel;
+  const h = ENEMY_SPRITE.length * pixel;
   return {
-    x: cx - SPRITE_W / 2,
-    y: -SPRITE_H,
-    targetY: 110,
+    type,
+    pixel,
+    w,
+    h,
+    x: cx - w / 2,
+    y: -h,
+    targetY: ROW_CENTER_Y - h / 2,
     entering: true,
-    enterStart: performance.now(),
-    health: ENEMY_MAX_HEALTH,
+    enterStart: now,
+    health: ENEMY_HEALTH[type],
+    maxHealth: ENEMY_HEALTH[type],
     alive: true,
     exploding: false,
     explodeStart: 0,
-    nextShotTime: 0,
-    firstShotSet: false
+    nextShotTime: 0
   };
+}
+
+function spawnWave(index, now) {
+  const types = WAVES[index];
+  enemies = types.map((type, i) => makeEnemy(type, canvas.width * ((i + 1) / (types.length + 1)), now));
 }
 
 function resetGame() {
@@ -158,11 +177,10 @@ function resetGame() {
   bullets = [];
   enemies = [];
   balls = [];
-  explosions = [];
   hearts = START_HEARTS;
   gameOver = false;
-  gameStart = performance.now();
-  enemiesSpawned = false;
+  wave = -1;
+  nextWaveAt = performance.now() + ENEMY_SPAWN_DELAY;
   nextTurret = 0;
   spaceHeld = false;
   fireCooldown = 0;
@@ -209,20 +227,22 @@ function fireBullet() {
 }
 
 function enemyFire(enemy) {
-  const originX = enemy.x + SPRITE_W / 2;
-  const originY = enemy.y + SPRITE_H;
+  const originX = enemy.x + enemy.w / 2;
+  const originY = enemy.y + enemy.h;
   const dy = player.y - originY;
   const t = dy / BALL_SPEED_Y;
   const recordedVx = Math.random() < 0.4 ? -player.vx : player.vx;
   const speedMultiplier = 1 - (35 + Math.random() * 55) / 100;
   let predictedX = player.x + SPRITE_W / 2 + recordedVx * speedMultiplier * t;
   predictedX = Math.min(Math.max(predictedX, SPRITE_W / 2), canvas.width - SPRITE_W / 2);
-  const dx = predictedX - originX;
-  balls.push({
-    x: originX,
-    y: originY,
-    vx: dx / t,
-    vy: BALL_SPEED_Y
+  const offsets = enemy.type === 'big' ? [-BIG_SPREAD, 0, BIG_SPREAD] : [0];
+  offsets.forEach((offset) => {
+    balls.push({
+      x: originX,
+      y: originY,
+      vx: (predictedX + offset - originX) / t,
+      vy: BALL_SPEED_Y
+    });
   });
 }
 
@@ -247,13 +267,10 @@ function update(dt, now) {
     fireCooldown = 0;
   }
 
-  if (!enemiesSpawned && now - gameStart >= ENEMY_SPAWN_DELAY) {
-    enemiesSpawned = true;
-    const centers = [];
-    for (let i = 1; i <= ENEMY_COUNT; i++) {
-      centers.push(canvas.width * (i / (ENEMY_COUNT + 1)));
-    }
-    centers.forEach((cx) => enemies.push(makeEnemy(cx)));
+  if (nextWaveAt !== null && now >= nextWaveAt) {
+    wave++;
+    spawnWave(wave, now);
+    nextWaveAt = null;
   }
 
   enemies.forEach((enemy) => {
@@ -268,7 +285,7 @@ function update(dt, now) {
 
     if (enemy.entering) {
       const t = Math.min((now - enemy.enterStart) / ENEMY_ENTER_MS, 1);
-      enemy.y = -SPRITE_H + (enemy.targetY - (-SPRITE_H)) * t;
+      enemy.y = -enemy.h + (enemy.targetY + enemy.h) * t;
       if (t >= 1) {
         enemy.entering = false;
         enemy.nextShotTime = now + 1000 + Math.random() * 2000;
@@ -278,7 +295,7 @@ function update(dt, now) {
 
     if (now >= enemy.nextShotTime) {
       enemyFire(enemy);
-      enemy.nextShotTime = now + 5000 + (Math.random() * 2 - 1) * ENEMY_SHOT_INTERVAL_JITTER;
+      enemy.nextShotTime = now + 5000;
     }
   });
 
@@ -291,7 +308,7 @@ function update(dt, now) {
     }
     for (const enemy of enemies) {
       if (!enemy.alive || enemy.entering || enemy.exploding) continue;
-      if (rectsOverlap(b.x - BULLET_W / 2, b.y - BULLET_H / 2, BULLET_W, BULLET_H, enemy.x, enemy.y, SPRITE_W, SPRITE_H)) {
+      if (rectsOverlap(b.x - BULLET_W / 2, b.y - BULLET_H / 2, BULLET_W, BULLET_H, enemy.x, enemy.y, enemy.w, enemy.h)) {
         enemy.health -= BULLET_DAMAGE;
         bullets.splice(i, 1);
         if (enemy.health <= 0) {
@@ -322,8 +339,12 @@ function update(dt, now) {
     }
   }
 
-  if (enemiesSpawned && enemies.length > 0 && enemies.every((e) => !e.alive)) {
-    endGame(true);
+  if (!gameOver && nextWaveAt === null && enemies.every((e) => !e.alive)) {
+    if (wave < WAVES.length - 1) {
+      nextWaveAt = now + WAVE_GAP_MS;
+    } else {
+      endGame(true);
+    }
   }
 
   stars.forEach((s) => {
@@ -344,8 +365,8 @@ function drawStars() {
 }
 
 function drawHealthBar(enemy) {
-  const w = SPRITE_W;
-  const pct = Math.max(enemy.health, 0) / ENEMY_MAX_HEALTH;
+  const w = enemy.w;
+  const pct = Math.max(enemy.health, 0) / enemy.maxHealth;
   ctx.fillStyle = '#300';
   ctx.fillRect(enemy.x, enemy.y - 14, w, 6);
   ctx.fillStyle = '#f33';
@@ -362,13 +383,14 @@ function drawHealthBar(enemy) {
 
 function drawExplosion(enemy, now) {
   const t = (now - enemy.explodeStart) / 500;
-  const cx = enemy.x + SPRITE_W / 2;
-  const cy = enemy.y + SPRITE_H / 2;
+  const cx = enemy.x + enemy.w / 2;
+  const cy = enemy.y + enemy.h / 2;
+  const scale = enemy.pixel / PIXEL;
   const colors = ['#ffcc00', '#ff6600', '#ff2200'];
   for (let i = 0; i < 10; i++) {
     const angle = (i / 10) * Math.PI * 2;
-    const dist = t * 40 * (0.5 + (i % 3) * 0.3);
-    const size = Math.max(6 - t * 6, 1);
+    const dist = t * 40 * scale * (0.5 + (i % 3) * 0.3);
+    const size = Math.max((6 - t * 6) * scale, 1);
     ctx.fillStyle = colors[i % colors.length];
     ctx.globalAlpha = Math.max(1 - t, 0);
     ctx.fillRect(cx + Math.cos(angle) * dist - size / 2, cy + Math.sin(angle) * dist - size / 2, size, size);
@@ -416,7 +438,7 @@ function draw(now) {
       drawExplosion(enemy, now);
       return;
     }
-    drawSprite(ENEMY_SPRITE, ENEMY_COLORS, enemy.x, enemy.y);
+    drawSprite(ENEMY_SPRITE, ENEMY_COLORS, enemy.x, enemy.y, enemy.pixel);
     if (!enemy.entering) {
       drawHealthBar(enemy);
     }

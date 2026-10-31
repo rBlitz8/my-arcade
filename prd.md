@@ -20,3 +20,5 @@ Currently, each enemy ship records the movement of the player ship when they sho
 Double the red ball left and right variation.
 
 Actually, scrap the entire mechanic of red ball left and right variation. Currently, the enemy ships would shoot the red balls, in way that it would hit the player ship if the player kept moving the ship in the same direction. Make each shot of the red ball have a variation, where the red ball is shot in a way that it would hit the player ship moving 0.00-75.00% slower in the same direction
+
+Add a second wave of enemy ships, that come 2 seconds after the player defeats the first 6 enemy ships. There is a new type of enemy ship,  that is 50% bigger. It functions the same as the first type of enemy ship, except it shoots 3 red balls at once. One a bit to the left, one in the middle, one in the right. The second wave has 3 normal enemy ships, and 2 of the bigger type of enemy ships. They form a row that alternates the type. The player wins if they defeat both of the 2 waves.
