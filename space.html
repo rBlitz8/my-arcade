@@ -17,6 +17,32 @@
     color: #999;
     text-align: center;
   }
+  #test-panel {
+    position: fixed;
+    top: 50%;
+    right: 12px;
+    transform: translateY(-50%);
+    display: none;
+    flex-direction: column;
+    gap: 10px;
+    z-index: 10;
+  }
+  #test-panel.visible {
+    display: flex;
+  }
+  #test-panel button {
+    padding: 10px 12px;
+    font-family: monospace;
+    font-size: 0.9rem;
+    color: #ffd500;
+    background: #000;
+    border: 2px solid #ffd500;
+    cursor: pointer;
+  }
+  #test-panel button.on {
+    color: #000;
+    background: #ffd500;
+  }
 </style>
 </head>
 <body>
@@ -29,13 +55,25 @@
     <button id="restart">Play again</button>
   </div>
 </div>
+<div id="test-panel">
+  <button id="test-invincible">Invincible: OFF</button>
+  <button id="test-skip-2">Skip to Wave 2: OFF</button>
+  <button id="test-skip-3">Skip to Wave 3: OFF</button>
+</div>
 <script>
 const canvas = document.getElementById('game');
 const ctx = canvas.getContext('2d');
 const messageEl = document.getElementById('message');
 const messageTextEl = document.getElementById('message-text');
 const restartBtn = document.getElementById('restart');
+const testPanel = document.getElementById('test-panel');
+const testInvincibleBtn = document.getElementById('test-invincible');
+const testSkipBtns = [
+  { waveIndex: 1, label: 'Skip to Wave 2', el: document.getElementById('test-skip-2') },
+  { waveIndex: 2, label: 'Skip to Wave 3', el: document.getElementById('test-skip-3') }
+];
 
+const TEST_CODE = '839';
 const PIXEL = 5;
 const START_HEARTS = 3;
 const INVINCIBLE_MS = 1000;
@@ -56,10 +94,20 @@ const BIG_SPREAD = 130;
 const STILL_AIM_JITTER = 150;
 const WAVES = [
   ['normal', 'normal', 'normal', 'normal', 'normal', 'normal'],
-  ['big', 'big', 'big', 'big']
+  ['big', 'big', 'big', 'big'],
+  ['boss']
 ];
-const ENEMY_PIXEL = { normal: PIXEL, big: PIXEL * 1.5 };
-const ENEMY_HEALTH = { normal: ENEMY_MAX_HEALTH, big: Math.round(ENEMY_MAX_HEALTH * 1.5) };
+const ENEMY_PIXEL = { normal: PIXEL, big: PIXEL * 1.5, boss: PIXEL * 1.5 * 1.5 };
+const ENEMY_HEALTH = { normal: ENEMY_MAX_HEALTH, big: Math.round(ENEMY_MAX_HEALTH * 1.5), boss: 1001 };
+const EXPLOSION_RATE = { normal: 1, big: 0.75, boss: 0.6 };
+const BOSS_BALL_COUNT = 10;
+const BOSS_PHASE2_HEALTH = 666;
+const BOSS_PHASE3_HEALTH = 333;
+const SHOT_INTERVAL = { 1: 4000, 2: 900, 3: 2000 / 3 };
+const BOSS_FADE_MS = 1500;
+const HOMING_MAX_VX = 50;
+// Ball-to-ball spacing that clears the ship's 92px collision width plus the sideways drift of diagonal balls.
+const BOSS_HOLE_GAP = 130;
 
 const PLAYER_SPRITE = [
   '.Y......Y.',
@@ -84,6 +132,7 @@ const ENEMY_SPRITE = [
   'R.R....R.R'
 ];
 const ENEMY_COLORS = { R: '#ff2a2a', K: '#141414' };
+const BOSS_PHASE2_COLORS = { R: '#8b0000', K: '#141414' };
 
 const HEART_SPRITE = [
   '.RR.RR.',
@@ -139,6 +188,9 @@ for (let i = 0; i < 120; i++) {
 }
 
 let player, bullets, enemies, balls, hearts, gameOver, wave, nextWaveAt, nextTurret, spaceHeld, fireCooldown, leftHeld, rightHeld, lastTime;
+let typedKeys = '';
+let testInvincible = false;
+let testSkipWave = null;
 
 function makeEnemy(type, cx, now) {
   const pixel = ENEMY_PIXEL[type];
@@ -156,6 +208,8 @@ function makeEnemy(type, cx, now) {
     enterStart: now,
     health: ENEMY_HEALTH[type],
     maxHealth: ENEMY_HEALTH[type],
+    phase: 1,
+    phaseStart: 0,
     alive: true,
     exploding: false,
     explodeStart: 0,
@@ -180,7 +234,7 @@ function resetGame() {
   balls = [];
   hearts = START_HEARTS;
   gameOver = false;
-  wave = -1;
+  wave = testSkipWave === null ? -1 : testSkipWave - 1;
   nextWaveAt = performance.now() + ENEMY_SPAWN_DELAY;
   nextTurret = 0;
   spaceHeld = false;
@@ -203,6 +257,10 @@ window.addEventListener('keydown', (e) => {
   if (['arrowleft', 'arrowright', 'a', 'd', ' '].includes(key)) {
     e.preventDefault();
   }
+  if (!e.repeat) {
+    typedKeys = (typedKeys + key).slice(-TEST_CODE.length);
+    if (typedKeys === TEST_CODE) testPanel.classList.add('visible');
+  }
   if (gameOver) return;
   if (key === 'a' || key === 'arrowleft') leftHeld = true;
   else if (key === 'd' || key === 'arrowright') rightHeld = true;
@@ -217,6 +275,34 @@ window.addEventListener('keyup', (e) => {
 });
 
 restartBtn.addEventListener('click', resetGame);
+
+function jumpToWave(index) {
+  wave = index;
+  spawnWave(index, performance.now());
+  nextWaveAt = null;
+  balls = [];
+}
+
+// Blur so a later Space press fires the ship instead of re-clicking the focused button.
+testInvincibleBtn.addEventListener('click', () => {
+  testInvincible = !testInvincible;
+  testInvincibleBtn.textContent = `Invincible: ${testInvincible ? 'ON' : 'OFF'}`;
+  testInvincibleBtn.classList.toggle('on', testInvincible);
+  testInvincibleBtn.blur();
+});
+
+testSkipBtns.forEach((btn) => {
+  btn.el.addEventListener('click', () => {
+    testSkipWave = testSkipWave === btn.waveIndex ? null : btn.waveIndex;
+    testSkipBtns.forEach((other) => {
+      const on = testSkipWave === other.waveIndex;
+      other.el.textContent = `${other.label}: ${on ? 'ON' : 'OFF'}`;
+      other.el.classList.toggle('on', on);
+    });
+    btn.el.blur();
+    if (!gameOver) jumpToWave(testSkipWave === null ? 0 : testSkipWave);
+  });
+});
 
 const laserSound = new Audio('lazer.mp3');
 laserSound.preload = 'auto';
@@ -241,9 +327,45 @@ function fireBullet() {
   });
 }
 
+// Keeping at least 2 balls outside each hole stops the steepest diagonals from closing it.
+function bossFire(originX, originY) {
+  const minGap = BALL_RADIUS * 2 + 2;
+  const firstHole = 2 + Math.floor(Math.random() * 3);
+  const secondHole = BOSS_BALL_COUNT - 2 - Math.floor(Math.random() * 3);
+  const slack = canvas.width - SPRITE_W - minGap * (BOSS_BALL_COUNT - 3) - BOSS_HOLE_GAP * 2;
+  const shifts = Array.from({ length: BOSS_BALL_COUNT }, () => Math.random() * slack).sort((a, b) => a - b);
+  let baseX = SPRITE_W / 2;
+  shifts.forEach((shift, i) => {
+    if (i > 0) baseX += i === firstHole || i === secondHole ? BOSS_HOLE_GAP : minGap;
+    const dx = baseX + shift - originX;
+    const dy = player.y - originY;
+    const distance = Math.hypot(dx, dy);
+    balls.push({
+      x: originX,
+      y: originY,
+      vx: (dx / distance) * BALL_SPEED_Y,
+      vy: (dy / distance) * BALL_SPEED_Y
+    });
+  });
+}
+
 function enemyFire(enemy) {
   const originX = enemy.x + enemy.w / 2;
   const originY = enemy.y + enemy.h;
+  if (enemy.type === 'boss' && enemy.phase === 1) {
+    bossFire(originX, originY);
+    return;
+  }
+  if (enemy.phase === 3) {
+    balls.push({
+      x: originX,
+      y: originY,
+      vx: 0,
+      vy: BALL_SPEED_Y * 2,
+      homing: true
+    });
+    return;
+  }
   const dy = player.y - originY;
   const t = dy / BALL_SPEED_Y;
   const recordedVx = Math.random() < 0.4 ? -player.vx : player.vx;
@@ -253,7 +375,7 @@ function enemyFire(enemy) {
     predictedX += (Math.random() * 2 - 1) * STILL_AIM_JITTER;
   }
   predictedX = Math.min(Math.max(predictedX, SPRITE_W / 2), canvas.width - SPRITE_W / 2);
-  const offsets = enemy.type === 'big' ? [-BIG_SPREAD, 0, BIG_SPREAD] : [0];
+  const offsets = enemy.type === 'big' || enemy.phase === 2 ? [-BIG_SPREAD, 0, BIG_SPREAD] : [0];
   offsets.forEach((offset) => {
     balls.push({
       x: originX,
@@ -309,7 +431,7 @@ function update(dt, now) {
 
     if (now >= enemy.nextShotTime) {
       enemyFire(enemy);
-      enemy.nextShotTime = now + 4000;
+      enemy.nextShotTime = now + SHOT_INTERVAL[enemy.phase];
     }
   });
 
@@ -325,10 +447,18 @@ function update(dt, now) {
       if (rectsOverlap(b.x - BULLET_W / 2, b.y - BULLET_H / 2, BULLET_W, BULLET_H, enemy.x, enemy.y, enemy.w, enemy.h)) {
         enemy.health -= BULLET_DAMAGE;
         bullets.splice(i, 1);
+        if (enemy.type === 'boss') {
+          const phase = enemy.health <= BOSS_PHASE3_HEALTH ? 3 : (enemy.health <= BOSS_PHASE2_HEALTH ? 2 : 1);
+          if (phase !== enemy.phase) {
+            enemy.phase = phase;
+            enemy.phaseStart = now;
+            enemy.nextShotTime = now + SHOT_INTERVAL[phase];
+          }
+        }
         if (enemy.health <= 0) {
           enemy.exploding = true;
           enemy.explodeStart = now;
-          playSound(explosionSound, 0.3, enemy.type === 'big' ? 0.75 : 1);
+          playSound(explosionSound, 0.3, EXPLOSION_RATE[enemy.type]);
         }
         break;
       }
@@ -337,13 +467,18 @@ function update(dt, now) {
 
   for (let i = balls.length - 1; i >= 0; i--) {
     const ball = balls[i];
+    if (ball.homing && ball.y < player.y) {
+      const timeLeft = (player.y - ball.y) / ball.vy;
+      const aimVx = (player.x + SPRITE_W / 2 - ball.x) / timeLeft;
+      ball.vx = Math.min(Math.max(aimVx, -HOMING_MAX_VX), HOMING_MAX_VX);
+    }
     ball.x += ball.vx * (dt / 1000);
     ball.y += ball.vy * (dt / 1000);
     if (ball.y > canvas.height + 20) {
       balls.splice(i, 1);
       continue;
     }
-    if (now > player.invincibleUntil &&
+    if (!testInvincible && now > player.invincibleUntil &&
       rectsOverlap(ball.x - BALL_RADIUS, ball.y - BALL_RADIUS, BALL_RADIUS * 2, BALL_RADIUS * 2, player.x, player.y, SPRITE_W, SPRITE_H)) {
       balls.splice(i, 1);
       hearts--;
@@ -388,6 +523,12 @@ function drawHealthBar(enemy) {
   ctx.fillRect(enemy.x, enemy.y - 14, w * pct, 6);
   ctx.strokeStyle = '#800';
   ctx.strokeRect(enemy.x, enemy.y - 14, w, 6);
+  if (enemy.type === 'boss') {
+    ctx.fillStyle = '#ffd500';
+    [BOSS_PHASE2_HEALTH, BOSS_PHASE3_HEALTH].forEach((health) => {
+      ctx.fillRect(enemy.x + w * (health / enemy.maxHealth) - 1, enemy.y - 15, 2, 8);
+    });
+  }
 
   ctx.fillStyle = '#fff';
   ctx.font = '10px monospace';
@@ -429,7 +570,7 @@ function drawBalls() {
     ctx.save();
     ctx.shadowColor = '#ff2a2a';
     ctx.shadowBlur = 24;
-    ctx.fillStyle = '#ff5050';
+    ctx.fillStyle = ball.homing ? '#8b0000' : '#ff5050';
     ctx.beginPath();
     ctx.arc(ball.x, ball.y, BALL_RADIUS, 0, Math.PI * 2);
     ctx.fill();
@@ -444,6 +585,17 @@ function drawPlayer(now) {
   ctx.globalAlpha = 1;
 }
 
+function enemyLook(enemy, now) {
+  if (enemy.phase === 1) return { colors: ENEMY_COLORS, glowBlur: 0 };
+  if (enemy.phase === 2) return { colors: BOSS_PHASE2_COLORS, glowColor: '#ff2a2a', glowBlur: 14 };
+  const fade = Math.min((now - enemy.phaseStart) / BOSS_FADE_MS, 1);
+  return {
+    colors: { R: `rgb(${Math.round(139 * (1 - fade))}, 0, 0)`, K: '#141414' },
+    glowColor: '#ff0000',
+    glowBlur: 14 + fade * 26
+  };
+}
+
 function draw(now) {
   drawStars();
 
@@ -453,7 +605,15 @@ function draw(now) {
       drawExplosion(enemy, now);
       return;
     }
-    drawSprite(ENEMY_SPRITE, ENEMY_COLORS, enemy.x, enemy.y, enemy.pixel);
+    const look = enemyLook(enemy, now);
+    if (look.glowBlur > 0) {
+      ctx.save();
+      ctx.shadowColor = look.glowColor;
+      ctx.shadowBlur = look.glowBlur;
+      drawSprite(ENEMY_SPRITE, look.colors, enemy.x, enemy.y, enemy.pixel);
+      ctx.restore();
+    }
+    drawSprite(ENEMY_SPRITE, look.colors, enemy.x, enemy.y, enemy.pixel);
     if (!enemy.entering) {
       drawHealthBar(enemy);
     }
